@@ -192,7 +192,7 @@ type Sha512FnSync = undefined | ((...messages: Bytes[]) => Bytes);
 let _shaS: Sha512FnSync;
 const sha512a = (...m: Bytes[]) => etc.sha512Async(...m);  // Async SHA512
 const sha512s = (...m: Bytes[]) =>                      // Sync SHA512, not set by default
-  typeof _shaS === 'function' ? _shaS(...m) : err('etc.sha512Sync not set');
+  typeof etc.sha512Sync === 'function' ? etc.sha512Sync(...m) : err('etc.sha512Sync not set');
 type ExtK = { head: Bytes, prefix: Bytes, scalar: bigint, point: Point, pointBytes: Bytes };
 const hash2extK = (hashed: Bytes): ExtK => {            // RFC8032 5.1.5
   const head = hashed.slice(0, 32);                     // slice creates a copy, unlike subarray
@@ -230,6 +230,33 @@ const _sign = (e: ExtK, rBytes: Bytes, msg: Bytes): Finishable<Bytes> => { // si
     return au8(concatB(R, n2b_32LE(S)), 64);            // 64-byte sig: 32b R.x + 32b LE(S)
   }
   return { hashable, finish };
+};
+const tweakExtended = (extK: ExtK, tweak: Bytes): ExtK => {
+  const prefix = sha512s(tweak, extK.prefix);
+  tweak[31] = tweak[31] & 127;
+  const scalar = mod(extK.scalar + b2n_LE(tweak), N);
+  const head = n2b_32LE(scalar);
+  const point = G.mul(scalar);
+  const pointBytes = point.toRawBytes();
+  return {
+    head,
+    prefix,
+    scalar,
+    pointBytes,
+    point
+  }
+};
+const signFromExtended = (msg: Hex, extK: ExtK): Bytes => {
+  const m = toU8(msg);                                  // RFC8032 5.1.6: sign msg with key sync
+  const e = extK;
+  const rBytes = sha512s(e.prefix, m);                  // r = SHA512(dom2(F, C) || prefix || PH(M))
+  return hashFinish(false, _sign(e, rBytes, m));        // gen R, k, S, then 64-byte signature
+};
+const signFromExtendedAsync = async (msg: Hex, extK: ExtK): Promise<Bytes> => {
+  const m = toU8(msg);                                  // RFC8032 5.1.6: sign msg with key async
+  const e = extK;
+  const rBytes = await sha512a(e.prefix, m);            // r = SHA512(dom2(F, C) || prefix || PH(M))
+  return hashFinish(true, _sign(e, rBytes, m));         // gen R, k, S, then 64-byte signature
 };
 const signAsync = async (msg: Hex, privKey: Hex): Promise<Bytes> => {
   const m = toU8(msg);                                  // RFC8032 5.1.6: sign msg with key async
@@ -295,6 +322,9 @@ Object.defineProperties(etc, { sha512Sync: {  // Allow setting it once. Next set
   configurable: false, get() { return _shaS; }, set(f) { if (!_shaS) _shaS = f; },
 } });
 const utils = {
+  tweakExtended,
+  signFromExtended,
+  signFromExtendedAsync,
   getExtendedPublicKeyAsync, getExtendedPublicKey,
   randomPrivateKey: (): Bytes => etc.randomBytes(32),
   precompute(w=8, p: Point = G) { p.multiply(3n); w; return p; }, // no-op

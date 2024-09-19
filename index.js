@@ -231,7 +231,7 @@ const modL_LE = (hash) => mod(b2n_LE(hash), N); // modulo L; but little-endian
 let _shaS;
 const sha512a = (...m) => etc.sha512Async(...m); // Async SHA512
 const sha512s = (...m) => // Sync SHA512, not set by default
- typeof _shaS === 'function' ? _shaS(...m) : err('etc.sha512Sync not set');
+ typeof etc.sha512Sync === 'function' ? etc.sha512Sync(...m) : err('etc.sha512Sync not set');
 const hash2extK = (hashed) => {
     const head = hashed.slice(0, 32); // slice creates a copy, unlike subarray
     head[0] &= 248; // Clamp bits: 0b1111_1000,
@@ -263,6 +263,33 @@ const _sign = (e, rBytes, msg) => {
         return au8(concatB(R, n2b_32LE(S)), 64); // 64-byte sig: 32b R.x + 32b LE(S)
     };
     return { hashable, finish };
+};
+const tweakExtended = (extK, tweak) => {
+    const prefix = sha512s(tweak, extK.prefix);
+    tweak[31] = tweak[31] & 127;
+    const scalar = mod(extK.scalar + b2n_LE(tweak), N);
+    const head = n2b_32LE(scalar);
+    const point = G.mul(scalar);
+    const pointBytes = point.toRawBytes();
+    return {
+        head,
+        prefix,
+        scalar,
+        pointBytes,
+        point
+    };
+};
+const signFromExtended = (msg, extK) => {
+    const m = toU8(msg); // RFC8032 5.1.6: sign msg with key sync
+    const e = extK;
+    const rBytes = sha512s(e.prefix, m); // r = SHA512(dom2(F, C) || prefix || PH(M))
+    return hashFinish(false, _sign(e, rBytes, m)); // gen R, k, S, then 64-byte signature
+};
+const signFromExtendedAsync = async (msg, extK) => {
+    const m = toU8(msg); // RFC8032 5.1.6: sign msg with key async
+    const e = extK;
+    const rBytes = await sha512a(e.prefix, m); // r = SHA512(dom2(F, C) || prefix || PH(M))
+    return hashFinish(true, _sign(e, rBytes, m)); // gen R, k, S, then 64-byte signature
 };
 const signAsync = async (msg, privKey) => {
     const m = toU8(msg); // RFC8032 5.1.6: sign msg with key async
@@ -331,6 +358,9 @@ Object.defineProperties(etc, { sha512Sync: {
             _shaS = f; },
     } });
 const utils = {
+    tweakExtended,
+    signFromExtended,
+    signFromExtendedAsync,
     getExtendedPublicKeyAsync, getExtendedPublicKey,
     randomPrivateKey: () => etc.randomBytes(32),
     precompute(w = 8, p = G) { p.multiply(3n); w; return p; }, // no-op
